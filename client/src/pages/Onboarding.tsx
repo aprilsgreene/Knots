@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { LogoLockup } from "@/components/Logo";
 import { KnotsPattern } from "@/components/KnotsPattern";
 import { SafetyNotice } from "@/components/SafetyNotice";
+import { CORE_BRAND } from "@/lib/brand";
 
 export default function OnboardingPage({ onComplete }: { onComplete?: () => void }) {
   return (
@@ -19,6 +20,9 @@ export default function OnboardingPage({ onComplete }: { onComplete?: () => void
             <p className="text-sm text-muted-foreground mt-2 max-w-sm">
               A private space to notice how your relationships feel over time — in your own words, on your
               own terms.
+            </p>
+            <p className="text-xs text-muted-foreground mt-3 max-w-xs mx-auto leading-relaxed" data-testid="text-core-brand">
+              {CORE_BRAND}
             </p>
           </div>
         </div>

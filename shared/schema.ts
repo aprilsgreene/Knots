@@ -382,18 +382,35 @@ export type Preference = typeof preferences.$inferSelect;
 export type CategorySummary = {
   categoryKey: string;
   categoryLabel: string;
-  average: number; // 1-10, average of that category's traits in this check-in
-  elevatedTraits: { key: string; label: string; value: number }[]; // traits rated 7+
+  /** 1-10 average of ONLY the traits the user actually rated; 0 when hasData is false */
+  average: number;
+  /** false when none of this category's traits were rated -- charts should skip it, not plot a default */
+  hasData: boolean;
+  elevatedTraits: { key: string; label: string; value: number }[]; // rated traits at 7+
 };
+
+/**
+ * Average of only the traits that were actually rated. Traits the user never
+ * touched are absent from `ratings` and are NOT filled in with a default, so
+ * they cannot nudge a chart or trend line.
+ */
+export function averageOfRated(
+  ratings: Record<string, number>,
+  traits: { key: string }[]
+): { average: number; hasData: boolean } {
+  const vals = traits.map((t) => ratings[t.key]).filter((v): v is number => typeof v === "number");
+  if (vals.length === 0) return { average: 0, hasData: false };
+  return { average: Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10, hasData: true };
+}
 
 export function summarizeHealthyCategories(ratings: Record<string, number>): CategorySummary[] {
   return HEALTHY_CATEGORIES.map((cat) => {
-    const vals = cat.traits.map((t) => ratings[t.key] ?? 5);
-    const average = Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10;
+    const { average, hasData } = averageOfRated(ratings, cat.traits);
     return {
       categoryKey: cat.key,
       categoryLabel: cat.label,
       average,
+      hasData,
       elevatedTraits: [],
     };
   });
@@ -401,15 +418,15 @@ export function summarizeHealthyCategories(ratings: Record<string, number>): Cat
 
 export function summarizePatternCategories(ratings: Record<string, number>): CategorySummary[] {
   return PATTERN_CATEGORIES.map((cat) => {
-    const vals = cat.traits.map((t) => ratings[t.key] ?? 1);
-    const average = Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10;
+    const { average, hasData } = averageOfRated(ratings, cat.traits);
     const elevatedTraits = cat.traits
-      .filter((t) => (ratings[t.key] ?? 1) >= 7)
-      .map((t) => ({ key: t.key, label: t.label, value: ratings[t.key] ?? 1 }));
+      .filter((t) => typeof ratings[t.key] === "number" && ratings[t.key] >= 7)
+      .map((t) => ({ key: t.key, label: t.label, value: ratings[t.key] }));
     return {
       categoryKey: cat.key,
       categoryLabel: cat.label,
       average,
+      hasData,
       elevatedTraits,
     };
   });

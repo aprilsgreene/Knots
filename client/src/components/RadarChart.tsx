@@ -2,7 +2,7 @@ import { useId } from "react";
 
 interface RadarChartProps {
   /** category label -> average value 1-10 */
-  categories: { label: string; average: number }[];
+  categories: { label: string; average: number; hasData?: boolean }[];
   size?: number;
   /** caption shown under the chart to keep it framed as tentative, not factual */
   caption?: string;
@@ -58,7 +58,7 @@ export function RadarChart({ categories, size = 260, caption }: RadarChartProps)
         viewBox={`${-labelPad} 0 ${size + labelPad * 2} ${size + 12}`}
         role="img"
         aria-label={`Relationship trait snapshot, shaped by your own ratings: ${categories
-          .map((c) => `${c.label} ${c.average.toFixed(1)} out of 10`)
+          .map((c) => (c.hasData === false ? `${c.label} not rated yet` : `${c.label} ${c.average.toFixed(1)} out of 10`))
           .join(", ")}`}
       >
         <defs>
@@ -108,6 +108,7 @@ export function RadarChart({ categories, size = 260, caption }: RadarChartProps)
 
         {/* Data bars */}
         {categories.map((c, i) => {
+          if (c.hasData === false) return null;
           const frac = Math.max(0.04, Math.min(1, c.average / 10));
           const rOuter = innerR + (outerR - innerR) * frac;
           return (
@@ -125,6 +126,7 @@ export function RadarChart({ categories, size = 260, caption }: RadarChartProps)
 
         {/* Value chips at the end of each bar */}
         {categories.map((c, i) => {
+          if (c.hasData === false) return null;
           const frac = Math.max(0.04, Math.min(1, c.average / 10));
           const rOuter = innerR + (outerR - innerR) * frac;
           const p = pt(angleCenter(i), rOuter + 15);

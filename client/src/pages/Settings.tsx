@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { Download, Trash2, ChevronRight, ShieldCheck, FileText, Sun, Moon, Monitor, LogOut } from "lucide-react";
+import { Download, Trash2, ChevronRight, ShieldCheck, FileText, Sun, Moon, Monitor, LogOut, UserX } from "lucide-react";
 import { useTheme } from "@/lib/ThemeProvider";
 import { useAuth } from "@/lib/AuthProvider";
 import type { ThemeMode } from "@shared/schema";
@@ -19,7 +19,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 const LEGAL_LINKS = [
@@ -48,6 +48,7 @@ export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
   const { user, signOut } = useAuth();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [modelTraining, setModelTraining] = useState(false);
   const [analytics, setAnalytics] = useState(false);
 
@@ -79,6 +80,25 @@ export default function SettingsPage() {
     onSuccess: () => {
       toast({ title: "All data deleted" });
       window.location.hash = "#/";
+    },
+  });
+
+  const deleteAccountMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("DELETE", "/api/account");
+    },
+    onSuccess: async () => {
+      setDeleteAccountOpen(false);
+      toast({ title: "Account deleted", description: "Your account and all of your data have been removed." });
+      queryClient.clear();
+      await signOut();
+    },
+    onError: () => {
+      toast({
+        title: "Couldn't delete your account",
+        description: "Nothing more was changed. Please try again in a moment.",
+        variant: "destructive",
+      });
     },
   });
 
@@ -194,7 +214,18 @@ export default function SettingsPage() {
             <Trash2 className="w-4 h-4 text-destructive" />
             <div className="flex-1">
               <p className="text-sm text-destructive">Delete all my data</p>
-              <p className="text-xs text-muted-foreground">Permanently erases every relationship and entry.</p>
+              <p className="text-xs text-muted-foreground">Permanently erases every relationship and entry. Your account stays.</p>
+            </div>
+          </button>
+          <button
+            onClick={() => setDeleteAccountOpen(true)}
+            className="w-full flex items-center gap-3 p-4 text-left hover-elevate active-elevate-2"
+            data-testid="button-delete-account"
+          >
+            <UserX className="w-4 h-4 text-destructive" />
+            <div className="flex-1">
+              <p className="text-sm text-destructive">Delete account</p>
+              <p className="text-xs text-muted-foreground">Permanently removes your account, your sign-in, and all of your data.</p>
             </div>
           </button>
         </Card>
@@ -222,6 +253,35 @@ export default function SettingsPage() {
           <ChevronRight className="w-4 h-4 text-muted-foreground" />
         </Card>
       </Link>
+
+      <AlertDialog open={deleteAccountOpen} onOpenChange={(o) => !deleteAccountMutation.isPending && setDeleteAccountOpen(o)}>
+        <AlertDialogContent data-testid="dialog-delete-account">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action is permanent and will remove all your data. Your account, every relationship, note,
+              check-in, and rating will be erased, and you will be signed out. It cannot be undone. Consider
+              exporting a copy first.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteAccountMutation.isPending} data-testid="button-cancel-delete-account">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                deleteAccountMutation.mutate();
+              }}
+              disabled={deleteAccountMutation.isPending}
+              className="bg-destructive text-destructive-foreground"
+              data-testid="button-confirm-delete-account"
+            >
+              {deleteAccountMutation.isPending ? "Deleting..." : "Delete my account"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>

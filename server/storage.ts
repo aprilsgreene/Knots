@@ -97,6 +97,8 @@ export interface IStorage {
     preferences: Preference[];
   }>;
   deleteAllData(userId: string): Promise<void>;
+  /** Everything deleteAllData removes, plus the per-user settings row. Used for full account deletion. */
+  deleteAccountData(userId: string): Promise<void>;
 
   // App-level flags (per-user, not shared content)
   getOnboarded(userId: string): Promise<boolean>;
@@ -377,6 +379,11 @@ export class DatabaseStorage implements IStorage {
     await db.delete(preferences).where(eq(preferences.userId, userId));
     await db.delete(relationships).where(eq(relationships.userId, userId));
     await db.delete(customTags).where(eq(customTags.userId, userId));
+  }
+
+  async deleteAccountData(userId: string): Promise<void> {
+    await this.deleteAllData(userId);
+    await db.delete(appSettings).where(eq(appSettings.userId, userId));
   }
 
   async getOnboarded(userId: string): Promise<boolean> {

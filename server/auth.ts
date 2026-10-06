@@ -11,7 +11,7 @@ import ws from "ws";
 // platform surfaces as a clean 500 JSON response from requireAuth below,
 // instead of crashing the whole function with an opaque platform error page.
 let supabaseAdmin: SupabaseClient | null = null;
-function getSupabaseAdmin(): SupabaseClient {
+export function getSupabaseAdmin(): SupabaseClient {
   if (supabaseAdmin) return supabaseAdmin;
 
   if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {

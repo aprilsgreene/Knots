@@ -10,7 +10,6 @@ import {
   Trash2,
   Pencil,
   Sparkles,
-  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -33,11 +32,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { TraitSlider } from "@/components/TraitSlider";
 import { RadarChart } from "@/components/RadarChart";
 import { CategoryTrendChart } from "@/components/CategoryTrendChart";
 import { CheckInFlow } from "@/components/CheckInFlow";
 import { QuickCheckIn } from "@/components/QuickCheckIn";
+import { InfoModal } from "@/components/InfoModal";
 import { LikesDislikes } from "@/components/LikesDislikes";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { topWords } from "@/lib/wordFrequency";
@@ -46,6 +45,7 @@ import {
   RELATIONSHIP_TYPE_LABELS,
   HEALTHY_CATEGORIES,
   PATTERN_CATEGORIES,
+  averageOfRated,
   summarizeHealthyCategories,
   summarizePatternCategories,
   describeCategoryLevel,
@@ -58,9 +58,6 @@ export default function RelationshipDetailPage() {
   const { toast } = useToast();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [checkInOpen, setCheckInOpen] = useState(false);
-  const [quickCheckInOpen, setQuickCheckInOpen] = useState(false);
-  const [activeHealthyTab, setActiveHealthyTab] = useState(HEALTHY_CATEGORIES[0].key);
-  const [activePatternTab, setActivePatternTab] = useState(PATTERN_CATEGORIES[0].key);
 
   const { data: relationship, isLoading: loadingRel } = useQuery<Relationship>({
     queryKey: ["/api/relationships", id],
@@ -87,16 +84,6 @@ export default function RelationshipDetailPage() {
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/relationships/${id}/checkins`);
       return res.json();
-    },
-  });
-
-  const traitMutation = useMutation({
-    mutationFn: async ({ traitKey, value }: { traitKey: string; value: number }) => {
-      const res = await apiRequest("PUT", `/api/relationships/${id}/traits/${traitKey}`, { value });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/relationships", id, "traits"] });
     },
   });
 
@@ -164,33 +151,38 @@ export default function RelationshipDetailPage() {
   }, [checkIns, ratingMap]);
 
   const healthySummary = useMemo(() => summarizeHealthyCategories(overallRatingMap), [overallRatingMap]);
-  const patternSummary = useMemo(() => summarizePatternCategories(overallRatingMap), [overallRatingMap]);
+  const patternSummary = useMemo(
+    () => summarizePatternCategories(overallRatingMap).filter((c) => c.hasData),
+    [overallRatingMap]
+  );
 
   // Per-category trend series across check-ins, oldest first, for the
-  // History tab's small charts. Purely descriptive, no judgment language.
-  const healthyTrends = useMemo(() => {
+  // Timeline tab's small charts. Each point averages ONLY the traits that
+  // were actually rated in that check-in; check-ins that skipped a category
+  // simply leave it out, so nothing is ever filled in with a default.
+  const buildTrends = (categories: typeof HEALTHY_CATEGORIES) => {
     const ordered = [...(checkIns ?? [])].sort((a, b) => a.createdAt - b.createdAt);
-    return HEALTHY_CATEGORIES.map((cat) => ({
+    return categories.map((cat) => ({
       label: cat.label,
-      points: ordered.map((ci) => {
+      points: ordered.flatMap((ci) => {
         const ratings: Record<string, number> = JSON.parse(ci.ratings);
-        const vals = cat.traits.map((t) => ratings[t.key] ?? 5);
-        return { date: ci.createdAt, average: vals.reduce((a, b) => a + b, 0) / vals.length };
+        const { average, hasData } = averageOfRated(ratings, cat.traits);
+        return hasData ? [{ date: ci.createdAt, average }] : [];
       }),
     }));
-  }, [checkIns]);
+  };
+  const healthyTrends = useMemo(() => buildTrends(HEALTHY_CATEGORIES), [checkIns]);
+  const patternTrends = useMemo(() => buildTrends(PATTERN_CATEGORIES), [checkIns]);
+  const hasAnyTrend = [...healthyTrends, ...patternTrends].some((t) => t.points.length >= 2);
 
-  const patternTrends = useMemo(() => {
-    const ordered = [...(checkIns ?? [])].sort((a, b) => a.createdAt - b.createdAt);
-    return PATTERN_CATEGORIES.map((cat) => ({
-      label: cat.label,
-      points: ordered.map((ci) => {
-        const ratings: Record<string, number> = JSON.parse(ci.ratings);
-        const vals = cat.traits.map((t) => ratings[t.key] ?? 1);
-        return { date: ci.createdAt, average: vals.reduce((a, b) => a + b, 0) / vals.length };
-      }),
-    }));
-  }, [checkIns]);
+  // One chronological feed of check-ins and notes, newest first.
+  const timelineItems = useMemo(() => {
+    const items: ({ kind: "checkin"; date: number; checkIn: CheckIn } | { kind: "note"; date: number; entry: Entry })[] = [
+      ...(checkIns ?? []).map((ci) => ({ kind: "checkin" as const, date: ci.createdAt, checkIn: ci })),
+      ...(entries ?? []).map((e) => ({ kind: "note" as const, date: e.entryDate, entry: e })),
+    ];
+    return items.sort((a, b) => b.date - a.date);
+  }, [checkIns, entries]);
 
   if (loadingRel) {
     return (
@@ -206,9 +198,9 @@ export default function RelationshipDetailPage() {
     return <p className="text-sm text-muted-foreground">This relationship could not be found.</p>;
   }
 
-  // The Likes & dislikes tab is for dating / intimate relationships.
+  // Likes is only for dating / intimate relationships. Everyone else sees
+  // the other four tabs: Overview, Quick Check-In, Timeline, Notes.
   const isIntimate = relationship.type === "intimate";
-  // Slightly tighter tabs so six fit on a phone without words running together.
   const tabTriggerClass = "px-1 text-[11px]";
 
   return (
@@ -247,45 +239,32 @@ export default function RelationshipDetailPage() {
         {relationship.note && <p className="text-sm text-foreground mt-3">{relationship.note}</p>}
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
-        <Link href={`/entries/new?relationshipId=${id}`}>
-          <Button variant="outline" className="w-full" data-testid="button-new-entry">
-            <Plus className="w-4 h-4" />
-            Add a note
+      <div className="space-y-1">
+        <div className="grid grid-cols-2 gap-2">
+          <Link href={`/entries/new?relationshipId=${id}`}>
+            <Button variant="outline" className="w-full" data-testid="button-new-entry">
+              <Plus className="w-4 h-4" />
+              Add a note
+            </Button>
+          </Link>
+          <Button className="w-full" onClick={() => setCheckInOpen(true)} data-testid="button-open-checkin">
+            <Sparkles className="w-4 h-4" />
+            Full check-in
           </Button>
-        </Link>
-        <Button className="w-full" onClick={() => setCheckInOpen(true)} data-testid="button-open-checkin">
-          <Sparkles className="w-4 h-4" />
-          Check in
-        </Button>
+        </div>
+        <InfoModal className="-ml-2" />
       </div>
 
       <Tabs defaultValue="overview">
-        <TabsList className="flex w-full h-auto justify-between gap-0.5">
+        <TabsList className="flex w-full h-auto justify-between gap-0.5" data-testid="tablist-relationship">
           <TabsTrigger value="overview" className={tabTriggerClass} data-testid="tab-overview">Overview</TabsTrigger>
-          <TabsTrigger value="traits" className={tabTriggerClass} data-testid="tab-traits">Traits</TabsTrigger>
-          <button
-            type="button"
-            onClick={() => setQuickCheckInOpen(true)}
-            data-testid="tab-quick-checkin"
-            className="inline-flex shrink-0 flex-col items-center justify-center gap-0.5 whitespace-normal rounded-xs px-0.5 py-1.5 text-[11px] font-medium leading-tight text-muted-foreground ring-offset-background transition-all hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          >
-            <Zap className="w-3.5 h-3.5" />
-            Quick<br />check-in
-          </button>
-          <TabsTrigger value="patterns" className={tabTriggerClass} data-testid="tab-patterns">Patterns</TabsTrigger>
+          <TabsTrigger value="quick" className={tabTriggerClass} data-testid="tab-quick-checkin">Quick Check-In</TabsTrigger>
           <TabsTrigger value="history" className={tabTriggerClass} data-testid="tab-history">Timeline</TabsTrigger>
           {isIntimate && (
             <TabsTrigger value="likes" className={tabTriggerClass} data-testid="tab-likes">Likes</TabsTrigger>
           )}
+          <TabsTrigger value="notes" className={tabTriggerClass} data-testid="tab-notes">Notes</TabsTrigger>
         </TabsList>
-
-        {/* Likes & dislikes -- intimate / dating relationships only */}
-        {isIntimate && (
-          <TabsContent value="likes" className="mt-5">
-            <LikesDislikes relationshipId={id!} relationshipLabel={relationship.label} />
-          </TabsContent>
-        )}
 
         {/* Overview */}
         <TabsContent value="overview" className="space-y-5 mt-5">
@@ -293,25 +272,27 @@ export default function RelationshipDetailPage() {
             <>
               <Card className="p-5 flex flex-col items-center">
                 <RadarChart
-                  categories={healthySummary.map((c) => ({ label: c.categoryLabel, average: c.average }))}
+                  categories={healthySummary.map((c) => ({ label: c.categoryLabel, average: c.average, hasData: c.hasData }))}
                   size={272}
-                  caption={`Your total ratings across all ${checkIns.length} check-in${checkIns.length === 1 ? "" : "s"} — your own view, not a fact.`}
+                  caption={`Your total ratings across all ${checkIns.length} check-in${checkIns.length === 1 ? "" : "s"} — your own view, not a fact. Categories you haven't rated stay blank.`}
                 />
               </Card>
-              <Card className="p-4">
-                <h2 className="text-sm text-foreground mb-2">Patterns across all your check-ins</h2>
-                <div className="space-y-2.5">
-                  {patternSummary.map((cat) => (
-                    <div key={cat.categoryKey} className="flex items-baseline justify-between gap-2" data-testid={`overview-pattern-${cat.categoryKey}`}>
-                      <span className="text-sm text-foreground">{cat.categoryLabel}</span>
-                      <span className="text-xs text-muted-foreground text-right">{describeCategoryLevel(cat.average)}</span>
-                    </div>
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground mt-3">
-                  {checkIns.length} check-in{checkIns.length === 1 ? "" : "s"} recorded.
-                </p>
-              </Card>
+              {patternSummary.length > 0 && (
+                <Card className="p-4">
+                  <h2 className="text-sm text-foreground mb-2">Patterns across all your check-ins</h2>
+                  <div className="space-y-2.5">
+                    {patternSummary.map((cat) => (
+                      <div key={cat.categoryKey} className="flex items-baseline justify-between gap-2" data-testid={`overview-pattern-${cat.categoryKey}`}>
+                        <span className="text-sm text-foreground">{cat.categoryLabel}</span>
+                        <span className="text-xs text-muted-foreground text-right">{describeCategoryLevel(cat.average)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-3">
+                    {checkIns.length} check-in{checkIns.length === 1 ? "" : "s"} recorded.
+                  </p>
+                </Card>
+              )}
             </>
           ) : (
             <div className="empty-state text-center py-10 px-4" data-testid="empty-state-checkins">
@@ -359,114 +340,64 @@ export default function RelationshipDetailPage() {
           )}
         </TabsContent>
 
-        {/* Traits */}
-        <TabsContent value="traits" className="mt-5 space-y-4">
-          <p className="text-xs text-muted-foreground">
-            The same five dimensions for every relationship. These reflect your latest check-in and can be
-            adjusted anytime — always your own tentative ratings, never a fixed fact about {relationship.label}.
-          </p>
-          <Tabs value={activeHealthyTab} onValueChange={setActiveHealthyTab}>
-            <TabsList className="flex-wrap h-auto gap-1 bg-transparent p-0">
-              {HEALTHY_CATEGORIES.map((cat) => (
-                <TabsTrigger key={cat.key} value={cat.key} className="text-xs" data-testid={`tab-detail-healthy-${cat.key}`}>
-                  {cat.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-            {HEALTHY_CATEGORIES.map((cat) => (
-              <TabsContent key={cat.key} value={cat.key} className="mt-4">
-                <Card className="p-4 space-y-5">
-                  <p className="text-xs text-muted-foreground">{cat.description}</p>
-                  {cat.traits.map((trait) => (
-                    <TraitSlider
-                      key={trait.key}
-                      trait={trait}
-                      value={ratingMap[trait.key] ?? 5}
-                      onChange={(value) => traitMutation.mutate({ traitKey: trait.key, value })}
-                    />
-                  ))}
-                </Card>
-              </TabsContent>
-            ))}
-          </Tabs>
+        {/* Quick Check-In */}
+        <TabsContent value="quick" className="mt-5">
+          <QuickCheckIn relationshipId={id!} currentRatings={ratingMap} />
         </TabsContent>
 
-        {/* Patterns */}
-        <TabsContent value="patterns" className="mt-5 space-y-4">
-          <div className="rounded-md border border-border bg-muted/50 px-3.5 py-3">
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              These track moments you experienced or noticed — not a label placed on {relationship.label}. Rate how
-              often each has come up for you. Nothing here computes a score or tells you what to do.
-            </p>
-          </div>
-          <Tabs value={activePatternTab} onValueChange={setActivePatternTab}>
-            <TabsList className="flex-wrap h-auto gap-1 bg-transparent p-0">
-              {PATTERN_CATEGORIES.map((cat) => (
-                <TabsTrigger key={cat.key} value={cat.key} className="text-xs" data-testid={`tab-detail-pattern-${cat.key}`}>
-                  {cat.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-            {PATTERN_CATEGORIES.map((cat) => (
-              <TabsContent key={cat.key} value={cat.key} className="mt-4">
-                <Card className="p-4 space-y-5">
-                  <p className="text-xs text-muted-foreground">{cat.description}</p>
-                  {cat.traits.map((trait) => (
-                    <TraitSlider
-                      key={trait.key}
-                      trait={trait}
-                      value={ratingMap[trait.key] ?? 1}
-                      onChange={(value) => traitMutation.mutate({ traitKey: trait.key, value })}
-                    />
-                  ))}
-                </Card>
-              </TabsContent>
-            ))}
-          </Tabs>
-        </TabsContent>
-
-        {/* History / Timeline */}
+        {/* Timeline: check-ins and notes together, newest first */}
         <TabsContent value="history" className="mt-5 space-y-6">
-          {checkIns && checkIns.length >= 2 && (
+          {hasAnyTrend && (
             <Card className="p-4 space-y-5" data-testid="card-trends">
               <h2 className="text-sm text-foreground">How your ratings have moved across check-ins</h2>
+              <p className="text-xs text-muted-foreground -mt-3">Only categories you actually rated appear in these charts.</p>
               <div className="space-y-4">
-                {healthyTrends.map((t) => (
+                {healthyTrends.filter((t) => t.points.length >= 2).map((t) => (
                   <CategoryTrendChart key={t.label} label={t.label} points={t.points} />
                 ))}
               </div>
-              <div className="pt-2 border-t border-border space-y-4">
-                <p className="text-xs text-muted-foreground">Patterns, over time</p>
-                {patternTrends.map((t) => (
-                  <CategoryTrendChart key={t.label} label={t.label} points={t.points} />
-                ))}
-              </div>
+              {patternTrends.some((t) => t.points.length >= 2) && (
+                <div className="pt-2 border-t border-border space-y-4">
+                  <p className="text-xs text-muted-foreground">Patterns, over time</p>
+                  {patternTrends.filter((t) => t.points.length >= 2).map((t) => (
+                    <CategoryTrendChart key={t.label} label={t.label} points={t.points} />
+                  ))}
+                </div>
+              )}
             </Card>
           )}
 
-          <div>
-            <h2 className="font-serif text-lg text-foreground mb-3">Check-ins</h2>
-            {!checkIns || checkIns.length === 0 ? (
-              <p className="text-sm text-muted-foreground" data-testid="empty-state-checkin-history">
-                No check-ins recorded yet.
+          {timelineItems.length === 0 ? (
+            <div className="empty-state text-center py-12 px-4" data-testid="empty-state-timeline">
+              <p className="text-sm text-muted-foreground max-w-xs mx-auto">
+                Nothing here yet. Your first check-in or note starts the timeline for {relationship.label}.
               </p>
-            ) : (
-              <ol role="list" className="space-y-3" data-testid="list-checkins">
-                {checkIns.map((ci) => {
+            </div>
+          ) : (
+            <ol role="list" className="space-y-3" data-testid="list-timeline">
+              {timelineItems.map((item) => {
+                if (item.kind === "checkin") {
+                  const ci = item.checkIn;
                   const ratings: Record<string, number> = JSON.parse(ci.ratings);
-                  const healthy = summarizeHealthyCategories(ratings);
+                  const healthy = summarizeHealthyCategories(ratings).filter((c) => c.hasData);
                   const patterns = summarizePatternCategories(ratings).filter((c) => c.elevatedTraits.length > 0);
                   return (
-                    <li key={ci.id}>
+                    <li key={`ci-${ci.id}`}>
                       <Card className="p-4" data-testid={`card-checkin-${ci.id}`}>
-                        <p className="text-xs text-muted-foreground mb-2">{format(new Date(ci.createdAt), "MMMM d, yyyy")}</p>
-                        <div className="flex flex-wrap gap-1.5 mb-2">
-                          {healthy.map((c) => (
-                            <Badge key={c.categoryKey} variant="secondary" className="text-xs">
-                              {c.categoryLabel}: {c.average.toFixed(1)}
-                            </Badge>
-                          ))}
-                        </div>
+                        <p className="text-xs text-muted-foreground mb-2">
+                          Check-in · {format(new Date(ci.createdAt), "MMMM d, yyyy")}
+                        </p>
+                        {healthy.length > 0 ? (
+                          <div className="flex flex-wrap gap-1.5 mb-2">
+                            {healthy.map((c) => (
+                              <Badge key={c.categoryKey} variant="secondary" className="text-xs">
+                                {c.categoryLabel}: {c.average.toFixed(1)}
+                              </Badge>
+                            ))}
+                          </div>
+                        ) : Object.keys(ratings).length === 0 ? (
+                          <p className="text-xs text-muted-foreground mb-2">Note only. No ratings were saved.</p>
+                        ) : null}
                         {patterns.length > 0 && (
                           <p className="text-xs text-muted-foreground mb-2">
                             Noticed: {patterns.map((p) => p.categoryLabel).join(", ")}
@@ -476,69 +407,99 @@ export default function RelationshipDetailPage() {
                       </Card>
                     </li>
                   );
-                })}
-              </ol>
-            )}
-          </div>
+                }
+                const entry = item.entry;
+                return (
+                  <li key={`en-${entry.id}`}>
+                    <Link href={`/entries/${entry.id}`} data-testid={`link-timeline-entry-${entry.id}`}>
+                      <Card className="p-4 hover-elevate active-elevate-2 cursor-pointer">
+                        <p className="text-xs text-muted-foreground mb-1">
+                          Note · {format(new Date(entry.entryDate), "MMMM d, yyyy")}
+                        </p>
+                        <p className="text-sm text-foreground font-medium">{entry.title || "Untitled note"}</p>
+                        <p className="text-sm text-muted-foreground line-clamp-2 mt-0.5">{entry.whatHappened}</p>
+                      </Card>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </TabsContent>
 
-          <div>
-            <h2 className="font-serif text-lg text-foreground mb-3">Entries</h2>
-            {loadingEntries && (
-              <div className="space-y-3">
-                {[1, 2].map((i) => (
-                  <Skeleton key={i} className="h-20 w-full" />
-                ))}
-              </div>
-            )}
-            {!loadingEntries && (entries ?? []).length === 0 && (
-              <div className="empty-state text-center py-12 px-4" data-testid="empty-state-entries">
-                <p className="text-sm text-muted-foreground max-w-xs mx-auto">
-                  No entries yet. Your first note starts the timeline for {relationship.label}.
-                </p>
-              </div>
-            )}
-            {!loadingEntries && (entries ?? []).length > 0 && (
-              <ol role="list" className="space-y-3" data-testid="list-timeline">
-                {(entries ?? []).map((entry) => {
-                  const emotionTags: string[] = JSON.parse(entry.emotionTags || "[]");
-                  const situationTags: string[] = JSON.parse(entry.situationTags || "[]");
-                  const linked = entry.linkedEntryId ? entryMap[entry.linkedEntryId] : undefined;
-                  return (
-                    <li key={entry.id}>
-                      <Link href={`/entries/${entry.id}`} data-testid={`link-entry-${entry.id}`}>
-                        <Card className="p-4 hover-elevate active-elevate-2 cursor-pointer">
-                          <div className="flex items-baseline justify-between gap-2 mb-1.5">
-                            <p className="text-sm text-foreground font-medium">
-                              {entry.title || format(new Date(entry.entryDate), "MMMM d, yyyy")}
-                            </p>
-                            <time className="text-xs text-muted-foreground shrink-0" dateTime={new Date(entry.entryDate).toISOString()}>
-                              {format(new Date(entry.entryDate), "MMM d")}
-                            </time>
-                          </div>
-                          <p className="text-sm text-muted-foreground line-clamp-2">{entry.whatHappened}</p>
-                          {(emotionTags.length > 0 || situationTags.length > 0) && (
-                            <div className="flex flex-wrap gap-1.5 mt-2.5">
-                              {[...emotionTags, ...situationTags].slice(0, 4).map((tag) => (
-                                <Badge key={tag} variant="secondary" className="text-xs" data-testid={`badge-entry-tag-${tag.replace(/\s+/g, "-")}`}>
-                                  {tag}
-                                </Badge>
-                              ))}
-                            </div>
-                          )}
-                          {linked && (
-                            <p className="flex items-center gap-1 text-xs text-muted-foreground mt-2.5">
-                              <Link2 className="w-3 h-3" />
-                              Connects to "{linked.title || linked.whatHappened.slice(0, 30)}"
-                            </p>
-                          )}
-                        </Card>
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ol>
-            )}
+        {/* Likes & dislikes -- intimate / dating relationships only */}
+        {isIntimate && (
+          <TabsContent value="likes" className="mt-5">
+            <LikesDislikes relationshipId={id!} relationshipLabel={relationship.label} />
+          </TabsContent>
+        )}
+
+        {/* Notes */}
+        <TabsContent value="notes" className="mt-5 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="font-serif text-lg text-foreground">Notes</h2>
+            <Link href={`/entries/new?relationshipId=${id}`}>
+              <Button size="sm" variant="outline" data-testid="button-notes-add">
+                <Plus className="w-4 h-4" />
+                Add a note
+              </Button>
+            </Link>
           </div>
+          {loadingEntries && (
+            <div className="space-y-3">
+              {[1, 2].map((i) => (
+                <Skeleton key={i} className="h-20 w-full" />
+              ))}
+            </div>
+          )}
+          {!loadingEntries && (entries ?? []).length === 0 && (
+            <div className="empty-state text-center py-12 px-4" data-testid="empty-state-entries">
+              <p className="text-sm text-muted-foreground max-w-xs mx-auto">
+                No notes yet. Write down what happened and how it felt, in your own words.
+              </p>
+            </div>
+          )}
+          {!loadingEntries && (entries ?? []).length > 0 && (
+            <ol role="list" className="space-y-3" data-testid="list-notes">
+              {(entries ?? []).map((entry) => {
+                const emotionTags: string[] = JSON.parse(entry.emotionTags || "[]");
+                const situationTags: string[] = JSON.parse(entry.situationTags || "[]");
+                const linked = entry.linkedEntryId ? entryMap[entry.linkedEntryId] : undefined;
+                return (
+                  <li key={entry.id}>
+                    <Link href={`/entries/${entry.id}`} data-testid={`link-entry-${entry.id}`}>
+                      <Card className="p-4 hover-elevate active-elevate-2 cursor-pointer">
+                        <div className="flex items-baseline justify-between gap-2 mb-1.5">
+                          <p className="text-sm text-foreground font-medium">
+                            {entry.title || format(new Date(entry.entryDate), "MMMM d, yyyy")}
+                          </p>
+                          <time className="text-xs text-muted-foreground shrink-0" dateTime={new Date(entry.entryDate).toISOString()}>
+                            {format(new Date(entry.entryDate), "MMM d")}
+                          </time>
+                        </div>
+                        <p className="text-sm text-muted-foreground line-clamp-2">{entry.whatHappened}</p>
+                        {(emotionTags.length > 0 || situationTags.length > 0) && (
+                          <div className="flex flex-wrap gap-1.5 mt-2.5">
+                            {[...emotionTags, ...situationTags].slice(0, 4).map((tag) => (
+                              <Badge key={tag} variant="secondary" className="text-xs" data-testid={`badge-entry-tag-${tag.replace(/\s+/g, "-")}`}>
+                                {tag}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+                        {linked && (
+                          <p className="flex items-center gap-1 text-xs text-muted-foreground mt-2.5">
+                            <Link2 className="w-3 h-3" />
+                            Connects to "{linked.title || linked.whatHappened.slice(0, 30)}"
+                          </p>
+                        )}
+                      </Card>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
         </TabsContent>
       </Tabs>
 
@@ -548,15 +509,6 @@ export default function RelationshipDetailPage() {
         currentRatings={ratingMap}
         open={checkInOpen}
         onClose={() => setCheckInOpen(false)}
-      />
-
-      <QuickCheckIn
-        relationshipId={id!}
-        category={HEALTHY_CATEGORIES.find((c) => c.key === activeHealthyTab)!}
-        currentRatings={ratingMap}
-        defaultValue={5}
-        open={quickCheckInOpen}
-        onClose={() => setQuickCheckInOpen(false)}
       />
 
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>

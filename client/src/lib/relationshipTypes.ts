@@ -11,6 +11,7 @@ export {
   SUGGESTED_EMOTIONAL_TAGS,
   SUGGESTED_SITUATIONAL_TAGS,
   summarizeHealthyCategories,
+  averageOfRated,
   summarizePatternCategories,
   describeCategoryLevel,
 } from "@shared/schema";

@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { storage } from "./storage";
-import { requireAuth } from "./auth";
+import { requireAuth, getSupabaseAdmin } from "./auth";
 import {
   insertRelationshipSchema,
   insertEntrySchema,
@@ -105,17 +105,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(list);
   });
 
-  app.put("/api/relationships/:id/traits/:traitKey", async (req, res) => {
-    try {
-      const schema = z.object({ value: z.number().int().min(1).max(10), note: z.string().optional() });
-      const { value, note } = schema.parse(req.body);
-      const rating = await storage.upsertTraitRating(req.userId!, req.params.id, req.params.traitKey, value, note);
-      res.json(rating);
-    } catch (err) {
-      res.status(400).json({ message: err instanceof Error ? err.message : "Invalid data" });
-    }
-  });
-
   // ---- Check-ins (snapshot of all trait ratings + note, per relationship) ----
   app.get("/api/relationships/:id/checkins", async (req, res) => {
     const list = await storage.listCheckIns(req.userId!, req.params.id);
@@ -126,8 +115,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const data = insertCheckInSchema.parse({ ...req.body, relationshipId: req.params.id });
       const created = await storage.createCheckIn(req.userId!, data);
-      // Keep "current" trait ratings in sync with the latest check-in so the
-      // Traits/Patterns tabs always reflect the most recent snapshot.
+      // Keep "current" trait ratings in sync with the latest check-in. Only
+      // traits the person actually rated are in `ratings` (the app drops
+      // untouched defaults before sending), so nothing else is written.
       await Promise.all(
         Object.entries(data.ratings).map(([traitKey, value]) =>
           storage.upsertTraitRating(req.userId!, req.params.id, traitKey, value)
@@ -206,6 +196,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.setHeader("Content-Disposition", "attachment; filename=kinlight-export.json");
     res.setHeader("Content-Type", "application/json");
     res.send(JSON.stringify(data, null, 2));
+  });
+
+  // Full account deletion (App Store guideline 5.1.1(v) and Google Play's
+  // account-deletion policy). Erases every row this person owns, then removes
+  // their sign-in itself from Supabase Auth. Data goes first so that a failure
+  // part-way leaves a signed-in user who can simply try again, never an
+  // orphaned set of journal rows nobody can reach.
+  app.delete("/api/account", async (req, res) => {
+    try {
+      await storage.deleteAccountData(req.userId!);
+      const { error } = await getSupabaseAdmin().auth.admin.deleteUser(req.userId!);
+      if (error) throw error;
+      res.status(204).end();
+    } catch (err) {
+      console.error("Account deletion failed:", err instanceof Error ? err.message : err);
+      res.status(500).json({ message: "We couldn't finish deleting your account. Please try again." });
+    }
   });
 
   app.post("/api/privacy/delete-all", async (req, res) => {
