@@ -10,6 +10,10 @@ import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
 import { rm, mkdir } from "node:fs/promises";
 
+// api/index.js is a tiny committed stub, so Vercel sees a function in the
+// repo BEFORE the build runs. It loads api/_server.js, the big bundle this
+// script generates (files starting with _ are never treated as functions).
+
 // Native/binary deps that must stay external (esbuild can't bundle native
 // bindings, and some packages assume they're loaded via require() from
 // node_modules rather than inlined).
@@ -17,7 +21,7 @@ const external = ["ws", "@supabase/supabase-js", "postgres", "better-sqlite3"];
 
 async function buildAll() {
   await rm("dist", { recursive: true, force: true });
-  await rm("api", { recursive: true, force: true });
+  await rm("api/_server.js", { force: true });
   await mkdir("api", { recursive: true });
 
   console.log("building client...");
@@ -29,7 +33,7 @@ async function buildAll() {
     platform: "node",
     format: "esm",
     bundle: true,
-    outfile: "api/index.js",
+    outfile: "api/_server.js",
     banner: {
       // esbuild's ESM output needs createRequire for any transitive
       // CommonJS dependency that still does `require(...)` internally.
