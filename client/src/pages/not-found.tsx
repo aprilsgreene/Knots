@@ -1,21 +1,21 @@
-import { Card, CardContent } from "@/components/ui/card";
-import { AlertCircle } from "lucide-react";
+import { useLocation } from "wouter";
+import { Button } from "@/components/ui/button";
+import { Compass } from "lucide-react";
 
+// Shown when the address inside the app doesn't match any screen. It never
+// dead-ends: one tap goes home.
 export default function NotFound() {
+  const [, navigate] = useLocation();
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-gray-50">
-      <Card className="w-full max-w-md mx-4">
-        <CardContent className="pt-6">
-          <div className="flex mb-4 gap-2">
-            <AlertCircle className="h-8 w-8 text-red-500" />
-            <h1 className="text-2xl font-bold text-gray-900">404 Page Not Found</h1>
-          </div>
-
-          <p className="mt-4 text-sm text-gray-600">
-            Did you forget to add the page to the router?
-          </p>
-        </CardContent>
-      </Card>
+    <div className="flex flex-col items-center text-center gap-3 py-16 px-4" data-testid="page-not-found">
+      <Compass className="w-8 h-8 text-primary" strokeWidth={1.5} aria-hidden="true" />
+      <h1 className="font-serif text-xl text-foreground">We can't find that page</h1>
+      <p className="text-sm text-muted-foreground max-w-xs">
+        The link may be old or mistyped. Your entries are safe.
+      </p>
+      <Button onClick={() => navigate("/", { replace: true })} data-testid="button-go-home">
+        Go to home
+      </Button>
     </div>
   );
 }

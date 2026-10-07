@@ -1,4 +1,4 @@
-import { Switch, Route, Router, useLocation } from "wouter";
+import { Switch, Route, Router, Redirect, useLocation } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { useEffect } from "react";
 import { queryClient, apiRequest } from "./lib/queryClient";
@@ -38,6 +38,10 @@ function AppRouter() {
       <Route path="/support" component={SupportPage} />
       <Route path="/legal/:slug" component={LegalDocPage} />
       <Route path="/legal" component={LegalIndexPage} />
+      {/* Old or auth-related addresses (for example "/login" or "/auth/callback")
+          land on home instead of a dead end. */}
+      <Route path="/login">{() => <Redirect to="/" replace />}</Route>
+      <Route path="/auth/:rest*">{() => <Redirect to="/" replace />}</Route>
       <Route component={NotFound} />
     </Switch>
   );

@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase, getAuthRedirectUrl } from "@/lib/supabase";
-import { handleAuthCallback, type CallbackNotice } from "@/lib/authCallback";
+import { handleAuthCallback, completePendingLink, type CallbackNotice, type PendingLink } from "@/lib/authCallback";
+import { friendlyAuthError, withTimeout } from "@/lib/authErrors";
 
 interface AuthContextValue {
   session: Session | null;
@@ -11,6 +12,13 @@ interface AuthContextValue {
   signUp: (email: string, password: string) => Promise<{ error?: string; needsEmailConfirmation?: boolean }>;
   signOut: () => Promise<void>;
   resendConfirmation: (email: string) => Promise<{ error?: string }>;
+  /** Emails a 6-digit sign-in code (also creates the account the first time). */
+  sendEmailCode: (email: string) => Promise<{ error?: string }>;
+  /** Checks the 6-digit code. `type` is "email" for sign-in codes, "signup" for confirm-your-account codes. */
+  verifyEmailCode: (email: string, code: string, type: "email" | "signup") => Promise<{ error?: string }>;
+  /** An emailed confirmation link that is waiting for the person to tap "Complete sign in". */
+  pendingLink: PendingLink | null;
+  completeSignIn: () => Promise<void>;
   /** Message left over from an email link (expired, opened elsewhere, etc.). */
   callbackNotice: CallbackNotice | null;
   clearCallbackNotice: () => void;
@@ -22,11 +30,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [callbackNotice, setCallbackNotice] = useState<CallbackNotice | null>(null);
+  const [pendingLink, setPendingLink] = useState<PendingLink | null>(null);
 
   useEffect(() => {
     // Finish any email-link sign-in first, then read the session.
     handleAuthCallback()
-      .then((notice) => setCallbackNotice(notice))
+      .then((outcome) => {
+        setCallbackNotice(outcome.notice);
+        setPendingLink(outcome.pending);
+      })
       .catch(() => {})
       .then(() => supabase.auth.getSession())
       .then((res) => {
@@ -47,16 +59,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       user: session?.user ?? null,
       isLoading,
       signInWithPassword: async (email, password) => {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        return error ? { error: error.message } : {};
+        try {
+          const { error } = await withTimeout(supabase.auth.signInWithPassword({ email, password }));
+          return error ? { error: friendlyAuthError(error) } : {};
+        } catch (err) {
+          return { error: friendlyAuthError(err) };
+        }
       },
       signUp: async (email, password) => {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: { emailRedirectTo: getAuthRedirectUrl() },
-        });
-        if (error) return { error: error.message };
+        let result;
+        try {
+          result = await withTimeout(
+            supabase.auth.signUp({ email, password, options: { emailRedirectTo: getAuthRedirectUrl() } })
+          );
+        } catch (err) {
+          return { error: friendlyAuthError(err) };
+        }
+        const { data, error } = result;
+        if (error) return { error: friendlyAuthError(error) };
         // Supabase hides whether an address is taken, but returns a user with
         // no identities when it already exists. Say so plainly.
         if (data.user && (data.user.identities?.length ?? 1) === 0) {
@@ -72,17 +92,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await supabase.auth.signOut({ scope: "local" }).catch(() => {});
       },
       resendConfirmation: async (email) => {
-        const { error } = await supabase.auth.resend({
-          type: "signup",
-          email,
-          options: { emailRedirectTo: getAuthRedirectUrl() },
-        });
-        return error ? { error: error.message } : {};
+        try {
+          const { error } = await withTimeout(
+            supabase.auth.resend({ type: "signup", email, options: { emailRedirectTo: getAuthRedirectUrl() } })
+          );
+          return error ? { error: friendlyAuthError(error) } : {};
+        } catch (err) {
+          return { error: friendlyAuthError(err) };
+        }
+      },
+      sendEmailCode: async (email) => {
+        try {
+          const { error } = await withTimeout(
+            supabase.auth.signInWithOtp({
+              email,
+              options: { shouldCreateUser: true, emailRedirectTo: getAuthRedirectUrl() },
+            })
+          );
+          return error ? { error: friendlyAuthError(error) } : {};
+        } catch (err) {
+          return { error: friendlyAuthError(err) };
+        }
+      },
+      verifyEmailCode: async (email, code, type) => {
+        try {
+          const { error } = await withTimeout(supabase.auth.verifyOtp({ email, token: code, type }));
+          return error ? { error: friendlyAuthError(error) } : {};
+        } catch (err) {
+          return { error: friendlyAuthError(err) };
+        }
+      },
+      pendingLink,
+      completeSignIn: async () => {
+        if (!pendingLink) return;
+        const notice = await completePendingLink(pendingLink);
+        setPendingLink(null);
+        if (notice) setCallbackNotice(notice);
       },
       callbackNotice,
       clearCallbackNotice: () => setCallbackNotice(null),
     }),
-    [session, isLoading, callbackNotice]
+    [session, isLoading, callbackNotice, pendingLink]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
